@@ -39,8 +39,8 @@
 #include "hash-ops.h"
 #include "oaes_lib.h"
 
-#define MEMORY         (1 << 21) // 2MB scratchpad
-#define ITER           (1 << 20)
+#define MEMORY         (1 << 22) // 4MB scratchpad
+#define ITER           (1 << 20) 
 #define AES_BLOCK_SIZE  16
 #define AES_KEY_SIZE    32
 #define INIT_SIZE_BLK   8
@@ -134,7 +134,7 @@ extern int aesb_pseudo_round(const uint8_t *in, uint8_t *out, const uint8_t *exp
 #define U64(x) ((uint64_t *) (x))
 #define R128(x) ((__m128i *) (x))
 
-#define state_index(x) (((*((uint64_t *)x) >> 4) & (TOTALBLOCKS - 1)) << 4)
+#define state_index(x,div) (((*((uint64_t *)x) >> 4) & (TOTALBLOCKS / (div)  - 1)) << 4)
 #if defined(_MSC_VER)
 #if !defined(_WIN64)
 #define __mul() lo = mul128(c[0], b[0], &hi);
@@ -150,7 +150,7 @@ extern int aesb_pseudo_round(const uint8_t *in, uint8_t *out, const uint8_t *exp
 #endif
 
 #define pre_aes() \
-  j = state_index(a); \
+  j = state_index(a,(variant < 1 ? 2 : 1)); \
   _c = _mm_load_si128(R128(&hp_state[j])); \
   _a = _mm_load_si128(R128(a)); \
 
@@ -168,7 +168,7 @@ extern int aesb_pseudo_round(const uint8_t *in, uint8_t *out, const uint8_t *exp
   _b = _mm_xor_si128(_b, _c); \
   _mm_store_si128(R128(&hp_state[j]), _b); \
   VARIANT1_1(&hp_state[j]); \
-  j = state_index(c); \
+  j = state_index(c,(variant < 1 ? 2 : 1)); \
   p = U64(&hp_state[j]); \
   b[0] = p[0]; b[1] = p[1]; \
   __mul(); \
@@ -302,9 +302,9 @@ STATIC INLINE void aes_256_assist2(__m128i* t1, __m128i * t3)
  * This is an SSE-optimized implementation of AES key schedule generation.  It
  * expands the key into multiple round keys, each of which is used in one round
  * of the AES encryption used to fill (and later, extract randomness from)
- * the large 2MB buffer.  Note that CryptoNight does not use a completely
+ * the large 4MB buffer.  Note that CryptoNight does not use a completely
  * standard AES encryption for its buffer expansion, so do not copy this
- * function outside of Monero without caution!  This version uses the hardware
+ * function outside of Shangcoin without caution!  This version uses the hardware
  * AESKEYGENASSIST instruction to speed key generation, and thus requires
  * CPU AES support.
  * For more information about these functions, see page 19 of Intel's AES instructions
@@ -358,7 +358,7 @@ STATIC INLINE void aes_expand_key(const uint8_t *key, uint8_t *expandedKey)
 /**
  * @brief a "pseudo" round of AES (similar to but slightly different from normal AES encryption)
  *
- * To fill its 2MB scratch buffer, CryptoNight uses a nonstandard implementation
+ * To fill its 4MB scratch buffer, CryptoNight uses a nonstandard implementation
  * of AES encryption:  It applies 10 rounds of the basic AES encryption operation
  * to an input 128 bit chunk of data <in>.  Unlike normal AES, however, this is
  * all it does;  it does not perform the initial AddRoundKey step (this is done
@@ -470,10 +470,10 @@ BOOL SetLockPagesPrivilege(HANDLE hProcess, BOOL bEnable)
 #endif
 
 /**
- * @brief allocate the 2MB scratch buffer using OS support for huge pages, if available
+ * @brief allocate the 4MB scratch buffer using OS support for huge pages, if available
  *
- * This function tries to allocate the 2MB scratch buffer using a single
- * 2MB "huge page" (instead of the usual 4KB page sizes) to reduce TLB misses
+ * This function tries to allocate the 4MB scratch buffer using a single
+ * 4MB "huge page" (instead of the usual 4KB page sizes) to reduce TLB misses
  * during the random accesses to the scratch buffer.  This is one of the
  * important speed optimizations needed to make CryptoNight faster.
  *
@@ -535,25 +535,25 @@ void slow_hash_free_state(void)
 }
 
 /**
- * @brief the hash function implementing CryptoNight, used for the Monero proof-of-work
+ * @brief the hash function implementing CryptoNight, used for the Shangcoin proof-of-work
  *
  * Computes the hash of <data> (which consists of <length> bytes), returning the
  * hash in <hash>.  The CryptoNight hash operates by first using Keccak 1600,
  * the 1600 bit variant of the Keccak hash used in SHA-3, to create a 200 byte
  * buffer of pseudorandom data by hashing the supplied data.  It then uses this
- * random data to fill a large 2MB buffer with pseudorandom data by iteratively
+ * random data to fill a large 4MB buffer with pseudorandom data by iteratively
  * encrypting it using 10 rounds of AES per entry.  After this initialization,
- * it executes 524,288 rounds of mixing through the random 2MB buffer using
+ * it executes 1,048,576 rounds of mixing through the random 4MB buffer using
  * AES (typically provided in hardware on modern CPUs) and a 64 bit multiply.
  * Finally, it re-mixes this large buffer back into
  * the 200 byte "text" buffer, and then hashes this buffer using one of four
  * pseudorandomly selected hash functions (Blake, Groestl, JH, or Skein)
  * to populate the output.
  *
- * The 2MB buffer and choice of functions for mixing are designed to make the
+ * The 4MB buffer and choice of functions for mixing are designed to make the
  * algorithm "CPU-friendly" (and thus, reduce the advantage of GPU, FPGA,
  * or ASIC-based implementations):  the functions used are fast on modern
- * CPUs, and the 2MB size matches the typical amount of L3 cache available per
+ * CPUs, and the 4MB size matches the typical amount of L3 cache available per
  * core on 2013-era CPUs.  When available, this implementation will use hardware
  * AES support on x86 CPUs.
  *
@@ -601,13 +601,13 @@ void cn_slow_hash(const void *data, size_t length, char *hash, int variant, int 
     VARIANT1_INIT64();
 
     /* CryptoNight Step 2:  Iteratively encrypt the results from Keccak to fill
-     * the 2MB large random access buffer.
+     * the 4MB large random access buffer.
      */
 
     if(useAes)
     {
         aes_expand_key(state.hs.b, expandedKey);
-        for(i = 0; i < MEMORY / INIT_SIZE_BYTE; i++)
+        for(i = 0; i < MEMORY / INIT_SIZE_BYTE / (variant < 1 ? 2 : 1); i++)
         {
             aes_pseudo_round(text, text, expandedKey, INIT_SIZE_BLK);
             memcpy(&hp_state[i * INIT_SIZE_BYTE], text, INIT_SIZE_BYTE);
@@ -617,7 +617,7 @@ void cn_slow_hash(const void *data, size_t length, char *hash, int variant, int 
     {
         aes_ctx = (oaes_ctx *) oaes_alloc();
         oaes_key_import_data(aes_ctx, state.hs.b, AES_KEY_SIZE);
-        for(i = 0; i < MEMORY / INIT_SIZE_BYTE; i++)
+        for(i = 0; i < MEMORY / INIT_SIZE_BYTE / (variant < 1 ? 2 : 1); i++)
         {
             for(j = 0; j < INIT_SIZE_BLK; j++)
                 aesb_pseudo_round(&text[AES_BLOCK_SIZE * j], &text[AES_BLOCK_SIZE * j], aes_ctx->key->exp_data);
@@ -631,8 +631,8 @@ void cn_slow_hash(const void *data, size_t length, char *hash, int variant, int 
     U64(b)[0] = U64(&state.k[16])[0] ^ U64(&state.k[48])[0];
     U64(b)[1] = U64(&state.k[16])[1] ^ U64(&state.k[48])[1];
 
-    /* CryptoNight Step 3:  Bounce randomly 1,048,576 times (1<<20) through the mixing buffer,
-     * using 524,288 iterations of the following mixing function.  Each execution
+    /* CryptoNight Step 3:  Bounce randomly 2,097,152 times (1<<21) through the mixing buffer,
+     * using 1,048,576 iterations of the following mixing function.  Each execution
      * performs two reads and writes from the mixing buffer.
      */
 
@@ -641,7 +641,7 @@ void cn_slow_hash(const void *data, size_t length, char *hash, int variant, int 
     // the useAes test is only performed once, not every iteration.
     if(useAes)
     {
-        for(i = 0; i < ITER / 2; i++)
+        for(i = 0; i < ITER / 2 * (variant ? 2 : 1); i++)
         {
             pre_aes();
             _c = _mm_aesenc_si128(_c, _a);
@@ -650,7 +650,7 @@ void cn_slow_hash(const void *data, size_t length, char *hash, int variant, int 
     }
     else
     {
-        for(i = 0; i < ITER / 2; i++)
+        for(i = 0; i < ITER / 2 * (variant ? 2 : 1); i++)
         {
             pre_aes();
             aesb_single_round((uint8_t *) &_c, (uint8_t *) &_c, (uint8_t *) &_a);
@@ -666,7 +666,7 @@ void cn_slow_hash(const void *data, size_t length, char *hash, int variant, int 
     if(useAes)
     {
         aes_expand_key(&state.hs.b[32], expandedKey);
-        for(i = 0; i < MEMORY / INIT_SIZE_BYTE; i++)
+        for(i = 0; i < MEMORY / INIT_SIZE_BYTE / (variant < 1 ? 2 : 1); i++)
         {
             // add the xor to the pseudo round
             aes_pseudo_round_xor(text, text, expandedKey, &hp_state[i * INIT_SIZE_BYTE], INIT_SIZE_BLK);
@@ -675,7 +675,7 @@ void cn_slow_hash(const void *data, size_t length, char *hash, int variant, int 
     else
     {
         oaes_key_import_data(aes_ctx, &state.hs.b[32], AES_KEY_SIZE);
-        for(i = 0; i < MEMORY / INIT_SIZE_BYTE; i++)
+        for(i = 0; i < MEMORY / INIT_SIZE_BYTE / (variant < 1 ? 2 : 1); i++)
         {
             for(j = 0; j < INIT_SIZE_BLK; j++)
             {
@@ -751,12 +751,12 @@ union cn_slow_hash_state
 
 #define TOTALBLOCKS (MEMORY / AES_BLOCK_SIZE)
 
-#define state_index(x) (((*((uint64_t *)x) >> 4) & (TOTALBLOCKS - 1)) << 4)
+#define state_index(x, div) (((*((uint64_t *)x) >> 4) & (TOTALBLOCKS / (div) - 1)) << 4)
 #define __mul() __asm__("mul %0, %1, %2\n\t" : "=r"(lo) : "r"(c[0]), "r"(b[0]) ); \
   __asm__("umulh %0, %1, %2\n\t" : "=r"(hi) : "r"(c[0]), "r"(b[0]) );
 
 #define pre_aes() \
-  j = state_index(a); \
+  j = state_index(a, (variant < 1 ? 2 : 1)); \
   _c = vld1q_u8(&hp_state[j]); \
   _a = vld1q_u8((const uint8_t *)a); \
 
@@ -765,7 +765,7 @@ union cn_slow_hash_state
   _b = veorq_u8(_b, _c); \
   vst1q_u8(&hp_state[j], _b); \
   VARIANT1_1(&hp_state[j]); \
-  j = state_index(c); \
+  j = state_index(c, (variant < 1 ? 2 : 1)); \
   p = U64(&hp_state[j]); \
   b[0] = p[0]; b[1] = p[1]; \
   __mul(); \
@@ -783,47 +783,47 @@ union cn_slow_hash_state
 */
 static void aes_expand_key(const uint8_t *key, uint8_t *expandedKey) {
 static const int rcon[] = {
-	0x01,0x01,0x01,0x01,
-	0x0c0f0e0d,0x0c0f0e0d,0x0c0f0e0d,0x0c0f0e0d,	// rotate-n-splat
-	0x1b,0x1b,0x1b,0x1b };
+    0x01,0x01,0x01,0x01,
+    0x0c0f0e0d,0x0c0f0e0d,0x0c0f0e0d,0x0c0f0e0d,    // rotate-n-splat
+    0x1b,0x1b,0x1b,0x1b };
 __asm__(
-"	eor	v0.16b,v0.16b,v0.16b\n"
-"	ld1	{v3.16b},[%0],#16\n"
-"	ld1	{v1.4s,v2.4s},[%2],#32\n"
-"	ld1	{v4.16b},[%0]\n"
-"	mov	w2,#5\n"
-"	st1	{v3.4s},[%1],#16\n"
+"   eor v0.16b,v0.16b,v0.16b\n"
+"   ld1 {v3.16b},[%0],#16\n"
+"   ld1 {v1.4s,v2.4s},[%2],#32\n"
+"   ld1 {v4.16b},[%0]\n"
+"   mov w2,#5\n"
+"   st1 {v3.4s},[%1],#16\n"
 "\n"
 "1:\n"
-"	tbl	v6.16b,{v4.16b},v2.16b\n"
-"	ext	v5.16b,v0.16b,v3.16b,#12\n"
-"	st1	{v4.4s},[%1],#16\n"
-"	aese	v6.16b,v0.16b\n"
-"	subs	w2,w2,#1\n"
+"   tbl v6.16b,{v4.16b},v2.16b\n"
+"   ext v5.16b,v0.16b,v3.16b,#12\n"
+"   st1 {v4.4s},[%1],#16\n"
+"   aese    v6.16b,v0.16b\n"
+"   subs    w2,w2,#1\n"
 "\n"
-"	eor	v3.16b,v3.16b,v5.16b\n"
-"	ext	v5.16b,v0.16b,v5.16b,#12\n"
-"	eor	v3.16b,v3.16b,v5.16b\n"
-"	ext	v5.16b,v0.16b,v5.16b,#12\n"
-"	eor	v6.16b,v6.16b,v1.16b\n"
-"	eor	v3.16b,v3.16b,v5.16b\n"
-"	shl	v1.16b,v1.16b,#1\n"
-"	eor	v3.16b,v3.16b,v6.16b\n"
-"	st1	{v3.4s},[%1],#16\n"
-"	b.eq	2f\n"
+"   eor v3.16b,v3.16b,v5.16b\n"
+"   ext v5.16b,v0.16b,v5.16b,#12\n"
+"   eor v3.16b,v3.16b,v5.16b\n"
+"   ext v5.16b,v0.16b,v5.16b,#12\n"
+"   eor v6.16b,v6.16b,v1.16b\n"
+"   eor v3.16b,v3.16b,v5.16b\n"
+"   shl v1.16b,v1.16b,#1\n"
+"   eor v3.16b,v3.16b,v6.16b\n"
+"   st1 {v3.4s},[%1],#16\n"
+"   b.eq    2f\n"
 "\n"
-"	dup	v6.4s,v3.s[3]		// just splat\n"
-"	ext	v5.16b,v0.16b,v4.16b,#12\n"
-"	aese	v6.16b,v0.16b\n"
+"   dup v6.4s,v3.s[3]       // just splat\n"
+"   ext v5.16b,v0.16b,v4.16b,#12\n"
+"   aese    v6.16b,v0.16b\n"
 "\n"
-"	eor	v4.16b,v4.16b,v5.16b\n"
-"	ext	v5.16b,v0.16b,v5.16b,#12\n"
-"	eor	v4.16b,v4.16b,v5.16b\n"
-"	ext	v5.16b,v0.16b,v5.16b,#12\n"
-"	eor	v4.16b,v4.16b,v5.16b\n"
+"   eor v4.16b,v4.16b,v5.16b\n"
+"   ext v5.16b,v0.16b,v5.16b,#12\n"
+"   eor v4.16b,v4.16b,v5.16b\n"
+"   ext v5.16b,v0.16b,v5.16b,#12\n"
+"   eor v4.16b,v4.16b,v5.16b\n"
 "\n"
-"	eor	v4.16b,v4.16b,v6.16b\n"
-"	b	1b\n"
+"   eor v4.16b,v4.16b,v6.16b\n"
+"   b   1b\n"
 "\n"
 "2:\n" : : "r"(key), "r"(expandedKey), "r"(rcon));
 }
@@ -838,71 +838,71 @@ __asm__(
  */
 STATIC INLINE void aes_pseudo_round(const uint8_t *in, uint8_t *out, const uint8_t *expandedKey, int nblocks)
 {
-	const uint8x16_t *k = (const uint8x16_t *)expandedKey, zero = {0};
-	uint8x16_t tmp;
-	int i;
+    const uint8x16_t *k = (const uint8x16_t *)expandedKey, zero = {0};
+    uint8x16_t tmp;
+    int i;
 
-	for (i=0; i<nblocks; i++)
-	{
-		uint8x16_t tmp = vld1q_u8(in + i * AES_BLOCK_SIZE);
-		tmp = vaeseq_u8(tmp, zero);
-		tmp = vaesmcq_u8(tmp);
-		tmp = vaeseq_u8(tmp, k[0]);
-		tmp = vaesmcq_u8(tmp);
-		tmp = vaeseq_u8(tmp, k[1]);
-		tmp = vaesmcq_u8(tmp);
-		tmp = vaeseq_u8(tmp, k[2]);
-		tmp = vaesmcq_u8(tmp);
-		tmp = vaeseq_u8(tmp, k[3]);
-		tmp = vaesmcq_u8(tmp);
-		tmp = vaeseq_u8(tmp, k[4]);
-		tmp = vaesmcq_u8(tmp);
-		tmp = vaeseq_u8(tmp, k[5]);
-		tmp = vaesmcq_u8(tmp);
-		tmp = vaeseq_u8(tmp, k[6]);
-		tmp = vaesmcq_u8(tmp);
-		tmp = vaeseq_u8(tmp, k[7]);
-		tmp = vaesmcq_u8(tmp);
-		tmp = vaeseq_u8(tmp, k[8]);
-		tmp = vaesmcq_u8(tmp);
-		tmp = veorq_u8(tmp,  k[9]);
-		vst1q_u8(out + i * AES_BLOCK_SIZE, tmp);
-	}
+    for (i=0; i<nblocks; i++)
+    {
+        uint8x16_t tmp = vld1q_u8(in + i * AES_BLOCK_SIZE);
+        tmp = vaeseq_u8(tmp, zero);
+        tmp = vaesmcq_u8(tmp);
+        tmp = vaeseq_u8(tmp, k[0]);
+        tmp = vaesmcq_u8(tmp);
+        tmp = vaeseq_u8(tmp, k[1]);
+        tmp = vaesmcq_u8(tmp);
+        tmp = vaeseq_u8(tmp, k[2]);
+        tmp = vaesmcq_u8(tmp);
+        tmp = vaeseq_u8(tmp, k[3]);
+        tmp = vaesmcq_u8(tmp);
+        tmp = vaeseq_u8(tmp, k[4]);
+        tmp = vaesmcq_u8(tmp);
+        tmp = vaeseq_u8(tmp, k[5]);
+        tmp = vaesmcq_u8(tmp);
+        tmp = vaeseq_u8(tmp, k[6]);
+        tmp = vaesmcq_u8(tmp);
+        tmp = vaeseq_u8(tmp, k[7]);
+        tmp = vaesmcq_u8(tmp);
+        tmp = vaeseq_u8(tmp, k[8]);
+        tmp = vaesmcq_u8(tmp);
+        tmp = veorq_u8(tmp,  k[9]);
+        vst1q_u8(out + i * AES_BLOCK_SIZE, tmp);
+    }
 }
 
 STATIC INLINE void aes_pseudo_round_xor(const uint8_t *in, uint8_t *out, const uint8_t *expandedKey, const uint8_t *xor, int nblocks)
 {
-	const uint8x16_t *k = (const uint8x16_t *)expandedKey;
-	const uint8x16_t *x = (const uint8x16_t *)xor;
-	uint8x16_t tmp;
-	int i;
+    const uint8x16_t *k = (const uint8x16_t *)expandedKey;
+    const uint8x16_t *x = (const uint8x16_t *)xor;
+    uint8x16_t tmp;
+    int i;
 
-	for (i=0; i<nblocks; i++)
-	{
-		uint8x16_t tmp = vld1q_u8(in + i * AES_BLOCK_SIZE);
-		tmp = vaeseq_u8(tmp, x[i]);
-		tmp = vaesmcq_u8(tmp);
-		tmp = vaeseq_u8(tmp, k[0]);
-		tmp = vaesmcq_u8(tmp);
-		tmp = vaeseq_u8(tmp, k[1]);
-		tmp = vaesmcq_u8(tmp);
-		tmp = vaeseq_u8(tmp, k[2]);
-		tmp = vaesmcq_u8(tmp);
-		tmp = vaeseq_u8(tmp, k[3]);
-		tmp = vaesmcq_u8(tmp);
-		tmp = vaeseq_u8(tmp, k[4]);
-		tmp = vaesmcq_u8(tmp);
-		tmp = vaeseq_u8(tmp, k[5]);
-		tmp = vaesmcq_u8(tmp);
-		tmp = vaeseq_u8(tmp, k[6]);
-		tmp = vaesmcq_u8(tmp);
-		tmp = vaeseq_u8(tmp, k[7]);
-		tmp = vaesmcq_u8(tmp);
-		tmp = vaeseq_u8(tmp, k[8]);
-		tmp = vaesmcq_u8(tmp);
-		tmp = veorq_u8(tmp,  k[9]);
-		vst1q_u8(out + i * AES_BLOCK_SIZE, tmp);
-	}
+    for (i=0; i<nblocks; i++)
+    {
+        uint8x16_t tmp = vld1q_u8(in + i * AES_BLOCK_SIZE);
+        tmp = vaeseq_u8(tmp, x[i]);
+        tmp = vaesmcq_u8(tmp);
+        tmp = vaeseq_u8(tmp, k[0]);
+        tmp = vaesmcq_u8(tmp);
+        tmp = vaeseq_u8(tmp, k[1]);
+        tmp = vaesmcq_u8(tmp);
+        tmp = vaeseq_u8(tmp, k[2]);
+        tmp = vaesmcq_u8(tmp);
+        tmp = vaeseq_u8(tmp, k[3]);
+        tmp = vaesmcq_u8(tmp);
+        tmp = vaeseq_u8(tmp, k[4]);
+        tmp = vaesmcq_u8(tmp);
+        tmp = vaeseq_u8(tmp, k[5]);
+        tmp = vaesmcq_u8(tmp);
+        tmp = vaeseq_u8(tmp, k[6]);
+        tmp = vaesmcq_u8(tmp);
+        tmp = vaeseq_u8(tmp, k[7]);
+        tmp = vaesmcq_u8(tmp);
+        tmp = vaeseq_u8(tmp, k[8]);
+        tmp = vaesmcq_u8(tmp);
+        tmp = veorq_u8(tmp,  k[9]);
+        vst1q_u8(out + i * AES_BLOCK_SIZE, tmp);
+    }
 }
 
 void cn_slow_hash(const void *data, size_t length, char *hash, int variant, int prehashed)
@@ -938,11 +938,11 @@ void cn_slow_hash(const void *data, size_t length, char *hash, int variant, int 
     VARIANT1_INIT64();
 
     /* CryptoNight Step 2:  Iteratively encrypt the results from Keccak to fill
-     * the 2MB large random access buffer.
+     * the 4MB large random access buffer.
      */
 
     aes_expand_key(state.hs.b, expandedKey);
-    for(i = 0; i < MEMORY / INIT_SIZE_BYTE; i++)
+    for(i = 0; i < MEMORY / INIT_SIZE_BYTE * (variant ? 2 : 1); i++)
     {
         aes_pseudo_round(text, text, expandedKey, INIT_SIZE_BLK);
         memcpy(&hp_state[i * INIT_SIZE_BYTE], text, INIT_SIZE_BYTE);
@@ -953,15 +953,15 @@ void cn_slow_hash(const void *data, size_t length, char *hash, int variant, int 
     U64(b)[0] = U64(&state.k[16])[0] ^ U64(&state.k[48])[0];
     U64(b)[1] = U64(&state.k[16])[1] ^ U64(&state.k[48])[1];
 
-    /* CryptoNight Step 3:  Bounce randomly 1,048,576 times (1<<20) through the mixing buffer,
-     * using 524,288 iterations of the following mixing function.  Each execution
+    /* CryptoNight Step 3:  Bounce randomly 2,097,152 times (1<<21) through the mixing buffer,
+     * using 1,048,576 iterations of the following mixing function.  Each execution
      * performs two reads and writes from the mixing buffer.
      */
 
     _b = vld1q_u8((const uint8_t *)b);
 
 
-    for(i = 0; i < ITER / 2; i++)
+    for(i = 0; i < ITER / 2 * (variant ? 2 : 1); i++)
     {
         pre_aes();
         _c = vaeseq_u8(_c, zero);
@@ -977,7 +977,7 @@ void cn_slow_hash(const void *data, size_t length, char *hash, int variant, int 
     memcpy(text, state.init, INIT_SIZE_BYTE);
 
     aes_expand_key(&state.hs.b[32], expandedKey);
-    for(i = 0; i < MEMORY / INIT_SIZE_BYTE; i++)
+    for(i = 0; i < MEMORY / INIT_SIZE_BYTE / (variant < 1 ? 2 : 1); i++)
     {
         // add the xor to the pseudo round
         aes_pseudo_round_xor(text, text, expandedKey, &hp_state[i * INIT_SIZE_BYTE], INIT_SIZE_BLK);
@@ -1035,7 +1035,7 @@ void mul(const uint8_t *ca, const uint8_t *cb, uint8_t *cres) {
 #else // !NO_OPTIMIZED_MULTIPLY_ON_ARM
 
 #ifdef __aarch64__ /* ARM64, no crypto */
-#define mul(a, b, c)	cn_mul128((const uint64_t *)a, (const uint64_t *)b, (uint64_t *)c)
+#define mul(a, b, c)    cn_mul128((const uint64_t *)a, (const uint64_t *)b, (uint64_t *)c)
 STATIC void cn_mul128(const uint64_t *a, const uint64_t *b, uint64_t *r)
 {
   uint64_t lo, hi;
@@ -1045,7 +1045,7 @@ STATIC void cn_mul128(const uint64_t *a, const uint64_t *b, uint64_t *r)
   r[1] = lo;
 }
 #else /* ARM32 */
-#define mul(a, b, c)	cn_mul128((const uint32_t *)a, (const uint32_t *)b, (uint32_t *)c)
+#define mul(a, b, c)    cn_mul128((const uint32_t *)a, (const uint32_t *)b, (uint32_t *)c)
 STATIC void cn_mul128(const uint32_t *aa, const uint32_t *bb, uint32_t *r)
 {
   uint32_t t0, t1, t2=0, t3=0;
@@ -1145,7 +1145,7 @@ void cn_slow_hash(const void *data, size_t length, char *hash, int variant, int 
 
     // use aligned data
     memcpy(expandedKey, aes_ctx->key->exp_data, aes_ctx->key->exp_data_len);
-    for(i = 0; i < MEMORY / INIT_SIZE_BYTE; i++)
+    for(i = 0; i < MEMORY / INIT_SIZE_BYTE / (variant < 1 ? 2 : 1); i++)
     {
         for(j = 0; j < INIT_SIZE_BLK; j++)
             aesb_pseudo_round(&text[AES_BLOCK_SIZE * j], &text[AES_BLOCK_SIZE * j], expandedKey);
@@ -1157,13 +1157,12 @@ void cn_slow_hash(const void *data, size_t length, char *hash, int variant, int 
     U64(b)[0] = U64(&state.k[16])[0] ^ U64(&state.k[48])[0];
     U64(b)[1] = U64(&state.k[16])[1] ^ U64(&state.k[48])[1];
 
-    for(i = 0; i < ITER / 2; i++)
+    for(i = 0; i < ITER / 2 * (variant ? 2 : 1); i++)
     {
-      #define MASK ((uint32_t)(((MEMORY / AES_BLOCK_SIZE) - 1) << 4))
-      #define state_index(x) ((*(uint32_t *) x) & MASK)
+      #define state_index(x,div) (((*((uint32_t *)x) >> 4) & ((uint32_t)((TOTALBLOCKS / (div)  - 1) << 4))
 
       // Iteration 1
-      p = &long_state[state_index(a)];
+      p = &long_state[state_index(a, variant < 1 ? 2 : 1)];
       aesb_single_round(p, p, a);
 
       xor_blocks(b, p);
@@ -1172,7 +1171,7 @@ void cn_slow_hash(const void *data, size_t length, char *hash, int variant, int 
       VARIANT1_1(p);
 
       // Iteration 2
-      p = &long_state[state_index(a)];
+      p = &long_state[state_index(a, variant < 1 ? 2 : 1)];
 
       mul(a, p, d);
       sum_half_blocks(b, d);
@@ -1185,7 +1184,7 @@ void cn_slow_hash(const void *data, size_t length, char *hash, int variant, int 
     memcpy(text, state.init, INIT_SIZE_BYTE);
     oaes_key_import_data(aes_ctx, &state.hs.b[32], AES_KEY_SIZE);
     memcpy(expandedKey, aes_ctx->key->exp_data, aes_ctx->key->exp_data_len);
-    for(i = 0; i < MEMORY / INIT_SIZE_BYTE; i++)
+    for(i = 0; i < MEMORY / INIT_SIZE_BYTE / (variant < 1 ? 2 : 1); i++)
     {
         for(j = 0; j < INIT_SIZE_BLK; j++)
         {
@@ -1317,7 +1316,7 @@ void cn_slow_hash(const void *data, size_t length, char *hash, int variant, int 
   VARIANT1_PORTABLE_INIT();
 
   oaes_key_import_data(aes_ctx, aes_key, AES_KEY_SIZE);
-  for (i = 0; i < MEMORY / INIT_SIZE_BYTE; i++) {
+  for (i = 0; i < MEMORY / INIT_SIZE_BYTE / (variant < 1 ? 2 : 1); i++) {
     for (j = 0; j < INIT_SIZE_BLK; j++) {
       aesb_pseudo_round(&text[AES_BLOCK_SIZE * j], &text[AES_BLOCK_SIZE * j], aes_ctx->key->exp_data);
     }
@@ -1329,23 +1328,23 @@ void cn_slow_hash(const void *data, size_t length, char *hash, int variant, int 
     b[i] = state.k[16 + i] ^ state.k[48 + i];
   }
 
-  for (i = 0; i < ITER / 2; i++) {
+  for (i = 0; i < ITER / 2 * (variant ? 2 : 1); i++) {
     /* Dependency chain: address -> read value ------+
      * written value <-+ hard function (AES or MUL) <+
      * next address  <-+
      */
     /* Iteration 1 */
-    j = e2i(a, MEMORY / AES_BLOCK_SIZE);
+    j = e2i(a, MEMORY / AES_BLOCK_SIZE / (variant < 1 ? 2 : 1));
     copy_block(c, &long_state[j * AES_BLOCK_SIZE]);
     aesb_single_round(c, c, a);
     xor_blocks(b, c);
     swap_blocks(b, c);
     copy_block(&long_state[j * AES_BLOCK_SIZE], c);
-    assert(j == e2i(a, MEMORY / AES_BLOCK_SIZE));
+    assert(j == e2i(a, MEMORY / AES_BLOCK_SIZE / (variant < 1 ? 2 : 1)));
     swap_blocks(a, b);
     VARIANT1_1(&long_state[j * AES_BLOCK_SIZE]);
     /* Iteration 2 */
-    j = e2i(a, MEMORY / AES_BLOCK_SIZE);
+    j = e2i(a, MEMORY / AES_BLOCK_SIZE / (variant < 1 ? 2 : 1));
     copy_block(c, &long_state[j * AES_BLOCK_SIZE]);
     mul(a, c, d);
     sum_half_blocks(b, d);
@@ -1353,13 +1352,13 @@ void cn_slow_hash(const void *data, size_t length, char *hash, int variant, int 
     xor_blocks(b, c);
     VARIANT1_2(c + 8);
     copy_block(&long_state[j * AES_BLOCK_SIZE], c);
-    assert(j == e2i(a, MEMORY / AES_BLOCK_SIZE));
+    assert(j == e2i(a, MEMORY / AES_BLOCK_SIZE / (variant < 1 ? 2 : 1)));
     swap_blocks(a, b);
   }
 
   memcpy(text, state.init, INIT_SIZE_BYTE);
   oaes_key_import_data(aes_ctx, &state.hs.b[32], AES_KEY_SIZE);
-  for (i = 0; i < MEMORY / INIT_SIZE_BYTE; i++) {
+  for (i = 0; i < MEMORY / INIT_SIZE_BYTE / (variant < 1 ? 2 : 1); i++) {
     for (j = 0; j < INIT_SIZE_BLK; j++) {
       xor_blocks(&text[j * AES_BLOCK_SIZE], &long_state[i * INIT_SIZE_BYTE + j * AES_BLOCK_SIZE]);
       aesb_pseudo_round(&text[AES_BLOCK_SIZE * j], &text[AES_BLOCK_SIZE * j], aes_ctx->key->exp_data);
