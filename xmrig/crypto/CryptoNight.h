@@ -34,9 +34,9 @@
 #define AEON_MASK     0xFFFF0
 #define AEON_ITER     0x40000
 
-#define MONERO_MEMORY 2097152
-#define MONERO_MASK   0x1FFFF0
-#define MONERO_ITER   0x80000
+#define MONERO_MEMORY 4194304
+#define MONERO_MASK   0x2FFFF0
+#define MONERO_ITER   0x100000
 
 
 struct cryptonight_ctx {
